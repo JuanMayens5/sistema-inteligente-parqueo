@@ -13,6 +13,17 @@ Sistemas · Universidad Mariano Gálvez.
 > (ESP32) todavía no existe**: hoy se simula desde la propia aplicación. Ver
 > [Estado y limitaciones](#estado-y-limitaciones).
 
+## Índice
+
+| Si quieres... | Ve a |
+|---|---|
+| Saber qué hace la aplicación | [Qué hace](#qué-hace) |
+| Instalarla y abrirla | [Requisitos](#requisitos) · [Instalación](#instalación) · [Configuración](#configuración) |
+| **Aprender a usarla** (sin saber programar) | **[Manual de usuario](#manual-de-usuario)** |
+| Entender el código | [Estructura del proyecto](#estructura-del-proyecto) · [Documentación](#documentación) |
+| Verificar que funciona | [Pruebas](#pruebas) · [docs/GUIA_DE_VALIDACION.md](docs/GUIA_DE_VALIDACION.md) |
+| Resolver un problema | [Solución de problemas](#solución-de-problemas) |
+
 ---
 
 ## Qué hace
@@ -92,13 +103,19 @@ El script crea la base `SistemaInteligenteParqueo` con:
 
 ### 4. Configurar la conexión
 
+> 📌 **`config_db.ini` es el único archivo que debes editar** para conectar la
+> aplicación a TU SQL Server (servidor, usuario, nombre de la base). No hay
+> que cambiar nada en el código. Este archivo no viene en el repositorio:
+> lo creas tú copiando la plantilla.
+
 Copia la plantilla (si no existe `config_db.ini`):
 
 ```bash
 copy config_db.ejemplo.ini config_db.ini
 ```
 
-Edítalo si tu SQL Server no es la instancia local con tu usuario de Windows.
+Edítalo si tu SQL Server no es la instancia local con tu usuario de Windows
+(otra instancia, otro servidor, usuario y contraseña de SQL Server, etc.).
 Ver [Configuración](#configuración).
 
 ### 5. Comprobar que todo está bien
@@ -158,74 +175,291 @@ los datos de ejemplo.
 
 ---
 
-## Guía de uso
+## Manual de usuario
 
-### Modo Operación (pantalla principal)
+Esta sección explica cómo usar la aplicación una vez instalada. No hace falta
+saber programar ni SQL.
 
-- **Barra de acción rápida:** escribe la placa, elige el tipo y usa el **botón
-  azul**, que siempre ofrece el siguiente paso según el estado del vehículo:
+### Conceptos básicos
 
-  | Estado del vehículo | Texto del botón |
-  |---|---|
-  | No registrado | Registrar y asignar espacio |
-  | Registrado, sin espacio | Asignar espacio |
-  | Espacio asignado | Registrar llegada |
-  | Ocupado, con alarma | **Apagar alarma** (botón rojo) |
-  | Ocupado | Autorizar salida |
-  | Salida autorizada | Registrar salida |
+| Palabra | Qué significa |
+|---|---|
+| **Espacio** | Un lugar del parqueo (`C-01`, `G-02`, `M-01`...). Cada uno es de un tipo: compacto, grande, motocicleta, carga y descarga o reservado |
+| **Vehículo** | Se identifica por su **placa** (hasta 20 caracteres; la aplicación la pasa a mayúsculas) y su **tipo** |
+| **Asignación** | La aplicación le **reserva** un espacio a un vehículo antes de que llegue |
+| **Ocupación** | El recorrido de un vehículo por un espacio, de que se le asigna hasta que sale |
+| **Seguridad** | Se **activa sola** cuando el vehículo llega y se **desactiva** cuando el operador autoriza su salida |
+| **Alarma** | Se dispara si hay movimiento en un espacio con la seguridad activa, o si un vehículo sale sin autorización. Siempre indica **qué vehículo** la causó |
+| **LED** | Cada espacio tiene un LED físico (en el futuro, con el hardware). En pantalla se ve como un puntito de color en la tarjeta |
+| **Operador** | Quien usa la aplicación. Su nombre (`operador` en `config_db.ini`) queda guardado al autorizar salidas o apagar alarmas |
 
-  `Enter` en el campo de placa ejecuta ese botón.
-- **Mapa de espacios:** clic en una tarjeta para ver su ficha y operar sobre
-  ese vehículo.
+**¿Qué espacio recibe cada tipo de vehículo?** Lo decide la base de datos, no la
+aplicación. Elige el mejor espacio libre y, si no hay, una alternativa:
 
-  | Color | Significado |
-  |---|---|
-  | Verde | Disponible |
-  | Amarillo | Asignado (esperando al vehículo) |
-  | Rojo | Ocupado |
-  | Azul | Saliendo (salida autorizada) |
-  | Gris | Fuera de servicio |
+| Vehículo | Primera opción | Si no hay |
+|---|---|---|
+| Compacto | Espacio compacto | Espacio grande |
+| Grande | Espacio grande | — |
+| Motocicleta | Espacio de motocicleta | Espacio compacto |
+| Carga | Espacio de carga y descarga | — |
+| Reservado | Espacio reservado | — |
 
-  El punto de cada tarjeta muestra el LED físico; con **borde rojo
-  parpadeante y ⚠** el espacio tiene una alarma activa.
-- **Aviso rojo sobre el mapa:** aparece cuando hay alarmas, con los botones
-  *Ver* y *Apagar alarma*.
-- **Indicadores del encabezado:** disponibles, asignados, ocupados y alarmas.
-- **🔔 y "Ver todas":** historial de notificaciones de la sesión.
-- **⋯ Más acciones:** registrar sin asignar, buscar un vehículo, actualizar,
-  limpiar campos.
+### El ciclo de un vehículo
 
-### Modo Avanzado (botón ⚙ del encabezado)
+Todo vehículo pasa por las mismas etapas, siempre en este orden:
 
-- **Detalle:** una tabla con selector: vehículos en el parqueo, catálogo de
-  espacios, vehículos registrados, alarmas activas, historial de ocupaciones,
-  eventos de sensor y bitácora de comandos.
-- **Consola del lenguaje:** escribe `AYUDA` para ver los comandos. Ejemplos:
+```mermaid
+flowchart LR
+    A["1. Registrar\n(darlo de alta)"] --> B["2. Asignar espacio\n(amarillo)"]
+    B --> C["3. Llegada\n(rojo · seguridad activada)"]
+    C --> D["4. Autorizar salida\n(azul · seguridad desactivada)"]
+    D --> E["5. Registrar salida\n(el espacio queda verde)"]
+```
 
-  ```
-  REGISTRAR P123ABC COMPACTO
-  ASIGNAR P123ABC
-  LLEGADA P123ABC
-  MOVIMIENTO C-01
-  APAGAR_ALARMA P123ABC
-  AUTORIZAR_SALIDA P123ABC
-  SALIDA P123ABC
-  CONSULTAR
-  ```
+**No tienes que recordarlo:** el botón azul de la pantalla siempre te ofrece el
+paso que sigue.
 
-  Cada instrucción queda registrada en la bitácora con su resultado.
-- **Simulador de sensores:** elige un espacio y dispara lo que reportaría el
-  hardware (llegó un vehículo, se fue, movimiento, botón de salida). Muestra los
-  mensajes `ESP:...` recibidos y los comandos `PY:...` que se le responderían al ESP32.
+### La pantalla principal
 
-### Escenario de prueba completo (alarma)
+Al abrir la aplicación ves el **modo Operación**:
 
-1. Registra `P123ABC` y asígnale espacio (botón azul).
-2. Registra su llegada → la seguridad queda armada.
-3. En el simulador, envía **Movimiento (PIR)** → alarma activa.
-4. **Apagar alarma** → la seguridad sigue armada.
-5. Envía **Se fue el vehículo** → alarma por salida no autorizada.
-6. **Autorizar salida** y luego **Registrar salida** → el espacio queda libre.
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Sistema Inteligente de Parqueo     ⚙ Modo avanzado 🔔  [9][0][0][0]      │ ① Encabezado
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Placa [_______]  Tipo [______▾]  [ Botón azul ]  [Liberar]  [⋯ Más acciones]│ ② Barra de acción
+├─────────────────────────────────────────────────────────────────────────────┤
+│ ⚠ C-01 · Movimiento no autorizado...              [Ver] [Apagar alarma]     │ ③ Aviso (solo si hay alarma)
+├─────────────────────────────────────────────────────────────────────────────┤
+│  COMPACTO · 2 de 3 disponibles        GRANDE · 2 de 2 disponibles           │
+│  [C-01] [C-02] [C-03]                 [G-01] [G-02]                         │ ④ Mapa de espacios
+├─────────────────────────────────────────────────────────────────────────────┤
+│ ✓ Última notificación                                       [Ver todas ▾]   │ ⑤ Notificaciones
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Encabezado.** Cuatro contadores: **Disponibles**, **Asignados**,
+   **Ocupados** y **Alarmas** (se pone rojo si hay alguna). **⚙ Modo avanzado**
+   cambia de pantalla; **🔔** abre el historial de notificaciones.
+2. **Barra de acción.** Aquí se escribe la placa, se elige el tipo y se usa el
+   botón azul.
+3. **Aviso de alarma.** Solo aparece cuando hay una alarma activa.
+4. **Mapa de espacios.** Una tarjeta por espacio, agrupadas por tipo.
+5. **Notificaciones.** Muestra el último mensaje. **Ver todas** abre el historial.
+
+Si dejas el mouse quieto sobre cualquier botón, indicador o tarjeta, aparece una
+explicación breve.
+
+### Los colores del mapa
+
+| Color | Significa | LED |
+|---|---|---|
+| 🟩 Verde | **Disponible** | verde |
+| 🟨 Amarillo | **Asignado**: reservado, el vehículo aún no llega | amarillo |
+| 🟥 Rojo | **Ocupado**: el vehículo está dentro | rojo |
+| 🟦 Azul | **Saliendo**: su salida ya fue autorizada | amarillo |
+| ⬜ Gris | **Fuera de servicio** | apagado |
+| Borde rojo parpadeante con ⚠ | **Alarma** en ese espacio | rojo intermitente |
+
+### El botón azul: siempre el siguiente paso
+
+Escribe la placa y mira qué dice el botón. Cambia solo según el estado del vehículo:
+
+| Si el vehículo... | El botón dice | Qué hace |
+|---|---|---|
+| No está registrado (o el campo está vacío) | **Registrar y asignar espacio** | Lo da de alta y le reserva un espacio |
+| Está registrado pero sin espacio | **Asignar espacio** | Le reserva un espacio |
+| Tiene espacio asignado y aún no llega | **Registrar llegada** | Confirma que llegó y activa la seguridad |
+| Está dentro del parqueo | **Autorizar salida** | Permite que se vaya y desactiva la seguridad |
+| Está dentro y hay una alarma | **Apagar alarma** (botón **rojo**) | Silencia la alarma |
+| Su salida está autorizada | **Registrar salida** | Libera el espacio |
+
+`Enter` en el campo de placa hace lo mismo que el botón. Si eliges una tarjeta
+ocupada en el mapa, su placa se escribe sola en el campo.
+
+### Tareas paso a paso
+
+#### Recibir un vehículo nuevo
+1. Escribe la placa (por ejemplo `P123ABC`).
+2. Elige el **tipo** de vehículo.
+3. Pulsa **Registrar y asignar espacio**.
+4. La aplicación avisa qué espacio le tocó (ejemplo: `C-01`) y esa tarjeta se pone **amarilla**.
+
+> Si solo quieres darlo de alta sin asignarle espacio todavía, usa
+> **⋯ Más acciones → Solo registrar**.
+
+#### Cuando el vehículo llega a su espacio
+1. Escribe la placa (o haz clic en su tarjeta amarilla).
+2. Pulsa **Registrar llegada**.
+3. La tarjeta se pone **roja** y la **seguridad queda activada**.
+
+#### Cuando el vehículo se va
+1. Con la placa escrita, pulsa **Autorizar salida**. La tarjeta se pone **azul**.
+2. Cuando se retire, pulsa **Registrar salida**.
+3. El espacio queda **verde** y disponible.
+
+> ⚠ **Autoriza la salida antes de que el vehículo se vaya.** Si se va sin
+> autorización, se dispara una alarma.
+
+#### Buscar un vehículo o ver un espacio
+- **Un vehículo:** escribe su placa y elige **⋯ Más acciones → Buscar vehículo por placa**.
+- **Un espacio:** haz clic en su tarjeta.
+
+En ambos casos se abre un **panel de información** en la esquina derecha, con
+el estado, las horas de asignación y llegada, quién autorizó la salida, si la
+seguridad está activa y si hay alarma. Se cierra con **×**.
+
+#### Revisar lo que pasó
+Pulsa **🔔** o **Ver todas** para ver el historial de notificaciones de la sesión.
+Cada acción deja un mensaje con su hora, en verde (correcto), ámbar (aviso),
+rojo (error) o azul (informativo).
+
+### Qué hacer cuando suena una alarma
+
+Una alarma significa que **algo pasó en un espacio con un vehículo que no tiene
+salida autorizada**. La aplicación avisa de tres formas a la vez: suena la
+campana del sistema, aparece una **franja roja** sobre el mapa y la tarjeta
+parpadea con ⚠. El contador de **Alarmas** del encabezado se pone rojo.
+
+La franja dice **qué espacio** y **qué vehículo** la causó. Cómo resolverla:
+
+1. Pulsa **Ver** en la franja para abrir el espacio afectado, o haz clic en la tarjeta que parpadea.
+2. Comprueba qué ocurrió (¿el vehículo realmente se mueve? ¿alguien intenta sacarlo?).
+3. Elige:
+   - **Apagar alarma** (franja o botón rojo): silencia la alarma, pero **la seguridad sigue activa**: si vuelve a haber movimiento, sonará otra vez.
+   - **Autorizar salida**: si el vehículo sí debe irse. Cierra la alarma y desactiva la seguridad.
+
+Hay dos causas de alarma:
+
+| Causa | Cuándo ocurre |
+|---|---|
+| Movimiento no autorizado | Se detecta movimiento en un espacio ocupado cuya salida no está autorizada |
+| Salida no autorizada | Se intenta registrar la salida de un vehículo sin haberla autorizado |
+
+Si se detecta movimiento **después** de autorizar la salida, no hay alarma.
+
+### Modo Avanzado
+
+Pulsa **⚙ Modo avanzado** para ver las herramientas técnicas, y **← Volver a
+operación** para regresar. Tiene tres pestañas.
+
+#### Detalle
+Una tabla con un selector **"Mostrar"** que cambia lo que ves:
+
+| Vista | Para qué sirve |
+|---|---|
+| Vehículos en el parqueo | Quién está dentro, en qué espacio y en qué etapa |
+| Catálogo de espacios | Todos los espacios con su sector, estado, LED y alarma |
+| Vehículos registrados | Todos los vehículos dados de alta |
+| Alarmas activas | Las alarmas sonando ahora y qué vehículo las causa |
+| Historial de ocupaciones | Todas las ocupaciones, incluidas las finalizadas |
+| Eventos de sensor | Lo que han reportado los sensores (llegadas, salidas, movimientos) |
+| Bitácora de comandos | Todo lo escrito en la consola y cómo terminó |
+
+Al hacer clic en una fila se abre su ficha en el panel de información.
+
+#### Consola del lenguaje
+Permite escribir **comandos** en vez de usar botones. Escribe `AYUDA` para ver la lista.
+
+| Comando | Qué hace |
+|---|---|
+| `REGISTRAR P123ABC COMPACTO` | Registra un vehículo (**placa primero, tipo después**) |
+| `ASIGNAR P123ABC` | Le asigna un espacio |
+| `LLEGADA P123ABC` | Confirma su llegada |
+| `MOVIMIENTO C-01` | Simula el sensor de movimiento en un espacio |
+| `APAGAR_ALARMA P123ABC` | Apaga la alarma del vehículo |
+| `AUTORIZAR_SALIDA P123ABC` | Autoriza su salida |
+| `SALIDA P123ABC` | Registra su salida |
+| `ESTADO` | Resumen del parqueo |
+| `CONSULTAR` / `CONSULTAR OCUPADOS` | Tabla de espacios (completa o filtrada) |
+| `VEHICULOS` · `ALARMAS` | Lista de vehículos / de alarmas activas |
+| `BUSCAR P123ABC` | Ficha de un vehículo |
+| `TOKENS REGISTRAR P1 X` | Muestra cómo el analizador divide un texto |
+| `LIMPIAR` | Borra la consola |
+
+Los tipos válidos son `COMPACTO`, `GRANDE`, `MOTOCICLETA`, `CARGA` y
+`RESERVADO`. La flecha **↑** recupera comandos anteriores. El `;` final es opcional.
+
+**Cada instrucción queda guardada en la bitácora** con el resultado:
+
+| Resultado | Significa | Ejemplo |
+|---|---|---|
+| `OK` | Se ejecutó | `REGISTRAR P123ABC COMPACTO` |
+| `ERROR_LEXICO` | Hay un carácter que no se reconoce | `REGISTRAR P123ABC #` |
+| `ERROR_SINTACTICO` | Comando desconocido o faltan datos | `ASIGNAR` (sin placa) |
+| `ERROR_SEMANTICO` | Está bien escrito pero la base lo rechazó | `ASIGNAR P999ZZZ` (no existe) |
+
+> La sintaxis de esta consola es **provisional**: el analizador definitivo del
+> curso la reemplazará.
+
+#### Simulador de sensores
+El hardware real (ESP32) todavía no está conectado. Este simulador reproduce lo
+que **haría**, para probar el sistema completo. Elige un **espacio** y pulsa:
+
+| Botón | Qué simula |
+|---|---|
+| 🚗 Llegó un vehículo | El sensor de ultrasonido detecta un vehículo (confirma su llegada si estaba asignado) |
+| ↩ Se fue el vehículo | El sensor deja de detectarlo (registra su salida; sin autorización, hay alarma) |
+| 👁 Movimiento (PIR) | El sensor de movimiento detecta actividad |
+| 🔘 Botón físico de salida | El operador presiona el botón de autorización |
+
+A la derecha, el registro muestra los mensajes que **recibiría** el ESP32
+(`→ ESP:...`) y las órdenes que se le **enviarían** para sus LEDs y su alarma
+(`← PY:LED:C-01:ROJO`, `← PY:ALARMA:ON`). **Reenviar estado completo** repite
+todas las órdenes, como si el ESP32 se hubiera reiniciado.
+
+### Ejemplo completo: de la llegada a la alarma
+
+1. Escribe `P123ABC`, elige **COMPACTO** y pulsa **Registrar y asignar espacio** → `C-01` amarillo.
+2. Pulsa **Registrar llegada** → `C-01` rojo, seguridad activada.
+3. **⚙ Modo avanzado → Simulador**, elige **C-01** y pulsa **Movimiento (PIR)** → alarma.
+4. Vuelve a operación: franja roja con el espacio y la placa. Pulsa **Apagar alarma**.
+5. En el simulador, pulsa **Se fue el vehículo** → nueva alarma, por salida no autorizada.
+6. Pulsa **Autorizar salida** → `C-01` azul, sin alarmas.
+7. Pulsa **Registrar salida** → `C-01` verde y libre.
+
+### Mensajes frecuentes
+
+| Mensaje | Qué significa y qué hacer |
+|---|---|
+| "Debes ingresar la placa del vehículo" | El campo de placa está vacío |
+| "La placa no puede tener más de 20 caracteres" | Escribe una placa más corta |
+| "La placa X ya estaba registrada" | Ese vehículo ya existe; el botón azul ofrece su siguiente paso |
+| "No hay espacios disponibles para vehículos tipo X" | Ya no queda ningún espacio compatible. Espera a que se libere uno |
+| "El vehículo X no tiene una asignación pendiente de llegada" | Ya registró su llegada, o nunca se le asignó espacio |
+| "La salida de X no estaba autorizada: se activó una alarma" | Se intentó la salida sin autorizar. Autorízala y vuelve a registrarla |
+| "Quedan solo N espacios disponibles" / "Parqueo lleno" | Aviso de capacidad |
+| "Se perdió la conexión con la base de datos" | Ver la pregunta de abajo |
+
+### Preguntas frecuentes
+
+**¿Se pierden los datos al cerrar la aplicación?**
+No. Todo se guarda en SQL Server. Solo se pierde en el *modo demostración*, que usa datos de ejemplo en memoria.
+
+**¿Qué pasa si se cae la conexión con la base de datos?**
+La aplicación no se cierra. Los controles se desactivan, el indicador de abajo
+se pone rojo y reintenta conectarse cada pocos segundos. Al volver la conexión,
+todo se reactiva solo y avisa "Conexión recuperada".
+
+**¿Puedo tener dos ventanas abiertas?**
+Sí. Lo que se haga en una aparece en la otra en unos segundos.
+
+**¿Un vehículo puede entrar otra vez después de salir?**
+Sí. Sigue registrado: el botón azul mostrará **Asignar espacio** y empieza un
+ciclo nuevo. El anterior queda en el historial.
+
+**¿Por qué no veo el botón "Liberar espacio"?**
+La base de datos todavía no tiene el procedimiento para cancelar una ocupación
+a mano. Cuando se agregue, el botón aparece solo. Mientras tanto, un vehículo
+que no llega no se puede quitar desde la aplicación.
+
+**¿El botón azul cambió y no sé por qué?**
+Cambia según la placa que está escrita: busca a ese vehículo y ofrece lo que
+sigue. Si no es el que querías, revisa la placa o pulsa **⋯ Más acciones → Limpiar campos**.
+
+**¿Dónde veo qué hizo cada persona?**
+En **Modo Avanzado → Detalle**: *Bitácora de comandos* (consola), *Historial de
+ocupaciones* (incluye quién autorizó cada salida) y *Eventos de sensor*.
 
 ---
 
@@ -354,6 +588,7 @@ Avanzado), simulador de sensores y reconexión automática.
 | [docs/DOCUMENTACION_TECNICA.md](docs/DOCUMENTACION_TECNICA.md) | Cómo funciona el código, flujos y cómo hacer cambios comunes |
 | [docs/PLAN_INTEGRACION_BASE_DATOS.md](docs/PLAN_INTEGRACION_BASE_DATOS.md) | Análisis de `database.sql` y plan de integración |
 | [docs/PLAN_INTEGRACION_HARDWARE.md](docs/PLAN_INTEGRACION_HARDWARE.md) | Protocolo con el ESP32 y lo que falta para el hardware |
+| [docs/GUIA_DE_VALIDACION.md](docs/GUIA_DE_VALIDACION.md) | Lista de pasos para comprobar que todo funciona antes de entregar |
 
 Para entender el código, empieza por `main.py` y luego por `interfaz/app.py`:
 cada archivo explica en su encabezado qué hace y cómo encaja.
