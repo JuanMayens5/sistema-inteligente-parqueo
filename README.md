@@ -21,6 +21,7 @@ Sistemas · Universidad Mariano Gálvez.
 | Instalarla y abrirla | [Requisitos](#requisitos) · [Instalación](#instalación) · [Configuración](#configuración) |
 | **Aprender a usarla** (sin saber programar) | **[Manual de usuario](#manual-de-usuario)** |
 | Entender el código | [Estructura del proyecto](#estructura-del-proyecto) · [Documentación](#documentación) |
+| **Conectar el hardware (ESP32)** | **[Para quien integre el hardware](#para-quien-integre-el-hardware)** |
 | Verificar que funciona | [Pruebas](#pruebas) · [docs/GUIA_DE_VALIDACION.md](docs/GUIA_DE_VALIDACION.md) |
 | Resolver un problema | [Solución de problemas](#solución-de-problemas) |
 
@@ -571,13 +572,99 @@ Avanzado), simulador de sensores y reconexión automática.
 - **Hardware real.** No existe el programa del ESP32 ni el puente por puerto
   serial. El protocolo de mensajes (`ESP:ESPACIO:C-01:OCUPADO`,
   `PY:LED:C-01:ROJO`...) es una propuesta pendiente de acordar con el equipo de
-  hardware. Ver [docs/PLAN_INTEGRACION_HARDWARE.md](docs/PLAN_INTEGRACION_HARDWARE.md).
+  hardware. Ver [Para quien integre el hardware](#para-quien-integre-el-hardware).
 - **Liberar un espacio manualmente.** La base no tiene `pa_cancelar_ocupacion`,
   por lo que ese botón no aparece con SQL Server (solo en modo demostración).
 - **Analizador léxico/sintáctico definitivo.** La consola usa uno provisional.
 - **Mejoras propuestas a la base de datos** (expiración de asignaciones,
   alarma de sensor inconsistente, espacios fuera de servicio, vista ampliada):
   ver [docs/PLAN_INTEGRACION_BASE_DATOS.md](docs/PLAN_INTEGRACION_BASE_DATOS.md).
+
+---
+
+## Para quien integre el hardware
+
+Esta sección es para la persona que arme el circuito (ESP32) y lo conecte con la
+aplicación. **El hardware real todavía no está conectado:** hoy la aplicación
+funciona con un *simulador* que reproduce lo que haría el ESP32. Lo que falta es
+(1) el programa del ESP32 y (2) el puente por el puerto USB. Ambos los
+desarrolla quien integre el hardware; esta sección indica dónde va cada cosa.
+
+### Cómo empezar sin el circuito
+
+1. Instala y abre la aplicación siguiendo [Instalación](#instalación).
+2. Lee el [Manual de usuario](#manual-de-usuario), sobre todo *El ciclo de un
+   vehículo* y *Qué hacer cuando suena una alarma*.
+3. Abre **⚙ Modo avanzado → Simulador de sensores** y recorre el ejemplo
+   completo del manual. Ahí ves exactamente qué mensajes recibiría el ESP32 y
+   cuáles recibiría de la aplicación.
+4. En el mismo simulador hay un campo **"Mensaje del ESP32 escrito a mano"**:
+   sirve para comprobar que el formato que manda tu programa lo entiende la
+   aplicación y la base, **sin necesidad de conectar nada**.
+
+### Cómo se comunican (protocolo propuesto)
+
+Texto plano separado por `:`, una línea por mensaje.
+
+| ESP32 → aplicación | Significa |
+|---|---|
+| `ESP:ESPACIO:C-01:OCUPADO` | El sensor de ultrasonido detectó un vehículo |
+| `ESP:ESPACIO:C-01:LIBRE` | El sensor dejó de detectarlo |
+| `ESP:MOVIMIENTO:C-01` | El sensor PIR detectó movimiento |
+| `ESP:BOTON:SALIDA:C-01` | Se presionó el botón de autorización |
+| `ESP:HEARTBEAT` | El ESP32 sigue conectado |
+
+| Aplicación → ESP32 | Significa |
+|---|---|
+| `PY:LED:C-01:<estado>` | Estado del LED del espacio: `VERDE`, `AMARILLO`, `ROJO`, `PARPADEO` o `APAGADO` |
+| `PY:ALARMA:ON` / `PY:ALARMA:OFF` | Encender o apagar el buzzer y el LED de alarma |
+
+> ⚠️ **Este protocolo es una propuesta, no un acuerdo.** Si tu programa usa otro
+> formato, se cambia en un solo archivo (`logica/eventos_hardware.py`). Los
+> `led_estado` son los mismos cinco valores que permite la base de datos. La
+> propuesta de cómo mostrarlos con un LED verde y uno rojo está en el plan de hardware.
+
+### Dónde va cada cosa en el código
+
+| Qué | Dónde |
+|---|---|
+| **Leer y escribir el puerto USB** | Archivo nuevo `hardware_serial.py` (**no existe todavía**). El esqueleto está en [docs/PLAN_INTEGRACION_HARDWARE.md](docs/PLAN_INTEGRACION_HARDWARE.md), sección 2.2. Requiere `pip install pyserial` (hoy **no** está en `requirements.txt`: agrégalo) |
+| **Mensajes del ESP32 → aplicación** | `AppParqueo.procesar_mensaje_esp32(linea)` en `interfaz/app.py` ya existe. Llámala con cada línea que llegue del puerto, desde un ciclo con `self.after()`. El simulador usa esa misma función |
+| **Aplicación → ESP32 (LEDs y alarma)** | En `AppParqueo.refrescar()` (`interfaz/app.py`) ya se calculan los comandos con `self.sincronizador.comandos_pendientes(...)`; hoy solo se escriben en el registro del simulador. Ahí hay que agregar el envío por el puerto |
+| **Formato de los mensajes** | `logica/eventos_hardware.py`: `interpretar_mensaje()` y `PLANTILLAS_ESP32` (lo que recibe) y `SincronizadorEsp32` (lo que envía) |
+| **Qué hace la base con cada evento** | `procesar_evento()` en `logica/eventos_hardware.py`, que llama a los procedimientos almacenados |
+| **Puerto y velocidad (COM, baudios)** | No hay dónde configurarlos todavía. Lo natural es agregarlos a `config_db.ini` y a la clase `Configuracion` de `datos/__init__.py` |
+| **Pin de cada espacio** | La base lo guarda en `espacios.direccion_hw` (ej. `PIN-02`), pero la aplicación no lo lee. Consúltalo con `SELECT codigo, direccion_hw FROM espacios` para armar la tabla del firmware |
+| **Programa del ESP32** | Lo desarrolla quien arme el circuito. No está en este repositorio |
+
+### Tres cosas importantes
+
+1. **El puerto serial se lee en un hilo aparte, pero ese hilo nunca debe tocar
+   la base ni la ventana.** Solo debe guardar las líneas en una cola
+   (`queue.Queue`); el hilo principal las procesa con `after()`. La conexión
+   a SQL Server (`pyodbc`) y Tkinter no son seguros entre hilos y, si se usan
+   desde otro, se caen. El esqueleto del plan ya está hecho así.
+2. **Los sensores detectan presencia, no placas.** Por eso el flujo es: el
+   operador registra la placa y se asigna el espacio desde la aplicación, y el
+   sensor confirma la llegada y la salida física. No intentes que el sensor
+   registre vehículos nuevos.
+3. **Esta integración nunca se probó con un ESP32 real.** El código de ejemplo
+   del plan es un punto de partida y puede necesitar ajustes. Lo que sí está
+   probado es todo lo que hay del lado de la aplicación y la base, con el
+   simulador (`pruebas/prueba_backend.py`, casos `EV-01` a `EV-07`).
+
+### Orden sugerido de pruebas
+
+1. Probar cada sensor y LED por separado desde el IDE de Arduino.
+2. Un script corto que lea el puerto e imprima las líneas (sin la aplicación).
+3. Comprobar con el campo "Mensaje del ESP32 escrito a mano" que cada mensaje
+   que manda tu programa se entiende.
+4. Conectar `hardware_serial.py` a la aplicación (ver la tabla anterior).
+5. Probar el escenario completo del manual con el circuito conectado y
+   pruebas de resistencia (desconectar el USB, reiniciar el ESP32).
+
+El detalle de cada fase y los diagramas de secuencia están en
+[docs/PLAN_INTEGRACION_HARDWARE.md](docs/PLAN_INTEGRACION_HARDWARE.md).
 
 ---
 
